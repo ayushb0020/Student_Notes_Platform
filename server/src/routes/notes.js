@@ -1,3 +1,7 @@
+
+import { extractPdfText } from "../utils/extractPdfText.js";
+import { validateNoteWithGemini } from "../utils/validateNoteWithGemini.js";
+
 import { Router } from "express";
 import multer from "multer";
 import path from "path";
@@ -46,7 +50,16 @@ function serialize(note, userId) {
 router.get("/", async (req, res, next) => {
   try {
     const { q = "", subject = "" } = req.query;
-    const filter = {};
+    const filter = {
+  $and: [
+    {
+      $or: [
+        { moderationStatus: "approved" },
+        { moderationStatus: { $exists: false } }
+      ]
+    }
+  ]
+};
     if (subject && subject !== "All subjects") filter.subject = subject;
     if (q.trim()) {
       const escaped = q.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -68,32 +81,87 @@ router.get("/", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+
 router.post("/", requireAuth, upload.single("file"), async (req, res, next) => {
+  let filePath;
+
   try {
-    if (!req.file) return res.status(400).json({ message: "Please choose a PDF file." });
+    if (!req.file) {
+      return res.status(400).json({
+        message: "Please choose a PDF file."
+      });
+    }
+
+    filePath = req.file.path;
+
     const title = String(req.body.title || "").trim();
     const subject = String(req.body.subject || "").trim();
     const description = String(req.body.description || "").trim();
+
     if (!title || !subject) {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ message: "Title and subject are required." });
+      fs.unlinkSync(filePath);
+      return res.status(400).json({
+        message: "Title and subject are required."
+      });
     }
+
+    const pdfText = await extractPdfText(filePath);
+
+    const validation = await validateNoteWithGemini({
+      title,
+      subject,
+      description,
+      pdfText
+    });
+
+    if (validation.status !== "approve") {
+      fs.unlinkSync(filePath);
+      filePath = null;
+
+      return res.status(422).json({
+        message:
+          validation.status === "reject"
+            ? "This PDF was rejected by the AI validator."
+            : "This PDF needs further review before it can be published.",
+        reason: validation.reason,
+        moderationStatus: validation.status
+      });
+    }
+
     const note = await Note.create({
-      title, subject, description,
+      title,
+      subject,
+      description,
       originalFileName: path.basename(req.file.originalname),
       storedFileName: req.file.filename,
       fileSize: req.file.size,
-      uploadedBy: req.user._id
+      uploadedBy: req.user._id,
+      moderationStatus: "approved",
+      moderationReason: validation.reason
     });
+
     const populated = await note.populate("uploadedBy", "name");
     res.status(201).json({ note: serialize(populated) });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    next(err);
+  }
 });
+
 
 router.get("/:id/download", async (req, res, next) => {
   try {
     const note = await Note.findById(req.params.id);
     if (!note) return res.status(404).json({ message: "Note not found." });
+    if (
+       note.moderationStatus &&
+       note.moderationStatus !== "approved"
+       ) {
+       return res.status(404).json({ message: "Note not found." });
+       }
     const filePath = path.join(uploadDir, path.basename(note.storedFileName));
     if (!fs.existsSync(filePath)) return res.status(404).json({ message: "File is no longer available." });
     res.download(filePath, note.originalFileName);
@@ -123,7 +191,17 @@ router.get("/mine/list", requireAuth, async (req, res, next) => {
 router.get("/bookmarks/list", requireAuth, async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id).select("bookmarks");
-    const notes = await Note.find({ _id: { $in: user.bookmarks } }).populate("uploadedBy", "name").sort({ createdAt: -1 });
+    
+    const notes = await Note.find({
+      _id: { $in: user.bookmarks },
+      $or: [
+      { moderationStatus: "approved" },
+      { moderationStatus: { $exists: false } }
+  ]
+})
+  .populate("uploadedBy", "name")
+  .sort({ createdAt: -1 });
+
     res.json({ notes: notes.map(n => ({ ...serialize(n), isBookmarked: true })) });
   } catch (err) { next(err); }
 });

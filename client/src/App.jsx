@@ -37,7 +37,11 @@ export default function App() {
     const response = await fetch(`${API}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } });
     const type = response.headers.get("content-type") || "";
     const data = type.includes("application/json") ? await response.json() : {};
-    if (!response.ok) throw new Error(data.message || "Something went wrong.");
+    if (!response.ok)  {
+  const message = data.message || "Something went wrong.";
+  const reason = data.reason ? ` Reason: ${data.reason}` : "";
+  throw new Error(`${message}${reason}`);
+  }
     return data;
   }
 

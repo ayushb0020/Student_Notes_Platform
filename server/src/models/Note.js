@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose";
 
 const noteSchema = new mongoose.Schema({
@@ -7,8 +8,22 @@ const noteSchema = new mongoose.Schema({
   originalFileName: { type: String, required: true },
   storedFileName: { type: String, required: true },
   fileSize: { type: Number, required: true },
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
+  uploadedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true
+  },
+  moderationStatus: {
+    type: String,
+    enum: ["pending", "approved", "rejected", "review"],
+    default: "approved"
+  },
+  moderationReason: {
+    type: String,
+    default: ""
+  }
 }, { timestamps: true });
 
 noteSchema.index({ title: "text", subject: "text", description: "text" });
+
 export default mongoose.model("Note", noteSchema);
